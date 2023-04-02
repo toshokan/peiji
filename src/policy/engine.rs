@@ -69,7 +69,7 @@ impl Engine {
                     bucket = &charge.bucket.as_str(),
                     "Refusing to charge already blocked bucket, resetting the block period."
                 );
-		ctx.state.block(&charge.bucket, 60).await?;
+                ctx.state.block(&charge.bucket, 60).await?;
                 return Ok(Response::Block);
             }
 

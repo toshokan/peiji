@@ -3,21 +3,28 @@ use tracing::{event, Level};
 
 use crate::{policy::Charge, Engine};
 
-use axum::{extract::{Json, State}, Router, routing::post, http::StatusCode, response::{IntoResponse}};
+use axum::{
+    extract::{Json, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::post,
+    Router,
+};
 
-async fn charges(State(engine): State<Arc<Engine>>, Json(charges): Json<Vec<Charge>>) -> impl IntoResponse {
+async fn charges(
+    State(engine): State<Arc<Engine>>,
+    Json(charges): Json<Vec<Charge>>,
+) -> impl IntoResponse {
     let mut ctx = match engine.request_ctx().await {
         Ok(ctx) => ctx,
         Err(e) => {
             event!(Level::ERROR, error = ?e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Err("server error"))
+            return (StatusCode::INTERNAL_SERVER_ERROR, Err("server error"));
         }
     };
-    
+
     match engine.charge(&mut ctx, charges).await {
-        Ok(result) => {
-            return (StatusCode::OK, Ok(Json(result)))
-        },
+        Ok(result) => return (StatusCode::OK, Ok(Json(result))),
         Err(e) => {
             event!(Level::ERROR, error = ?e);
         }
@@ -31,7 +38,7 @@ pub async fn server(binding: SocketAddr, engine: Engine) {
 
     let cleanup_engine = engine.clone();
     let _cleanup = tokio::spawn(async move { cleanup_engine.clean_up_worker().await });
-    
+
     let api = Router::new()
         .route("/charges", post(charges))
         .with_state(Arc::clone(&engine));

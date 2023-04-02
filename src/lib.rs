@@ -2,10 +2,10 @@ mod policy;
 mod server;
 mod state;
 
-use std::net::SocketAddr;
 pub use policy::{Charge, ConfigFile, Engine, Frequency, Limit};
 pub use state::alloc::AllocStore;
 pub use state::BucketStore;
+use std::net::SocketAddr;
 
 #[derive(Debug)]
 pub enum Error {
