@@ -43,5 +43,9 @@ async fn main() {
 
     let binding = SocketAddr::new(ip, config.listen_port);
 
-    peiji::peiji(binding, engine).await
+    let server_config = peiji::Config { binding };
+
+    let services = peiji::Services::new(server_config, engine);
+
+    peiji::peiji(services).await
 }

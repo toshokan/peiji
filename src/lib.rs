@@ -33,6 +33,22 @@ impl From<toml::de::Error> for Error {
     }
 }
 
-pub async fn peiji(server_binding: SocketAddr, engine: Engine) {
-    server::server(server_binding, engine).await
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub binding: SocketAddr,
+}
+
+pub struct Services {
+    config: Config,
+    engine: Engine,
+}
+
+impl Services {
+    pub fn new(config: Config, engine: Engine) -> Self {
+        Self { config, engine }
+    }
+}
+
+pub async fn peiji(services: Services) {
+    server::server(services.config.binding, services.engine).await
 }
