@@ -75,22 +75,18 @@ impl Engine {
         let counts = self.buckets.counts(data.iter().map(|(_, l)| l)).await?;
 
         for ((_, limit), current) in data.iter().zip(counts) {
-            if current > limit.freq.raw() {
+            if current.count > current.max {
                 event!(
                     Level::WARN,
-                    bucket = limit.bucket,
-                    limit = ?limit.freq,
-                    current = current,
+                    current_count = ?current,
                     "Blocking bucket"
                 );
                 self.buckets.block(&limit.bucket, 5).await?;
                 result = Response::Stop;
-            } else if current as f64 / limit.freq.raw() as f64 > 0.9 {
+            } else if current.count as f64 / current.max as f64 > 0.9 {
                 event!(
                     Level::WARN,
-                    bucket = limit.bucket,
-                    limit = ?limit.freq,
-                    current = current,
+                    current_count = ?current,
                     "Slow down"
                 );
                 result = Response::SlowDown;

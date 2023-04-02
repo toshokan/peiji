@@ -1,9 +1,10 @@
 use crate::policy::{Charge, LimitView};
 
 use deadpool_redis::{
-    redis::{self, AsyncCommands, Pipeline, RedisError},
+    redis::{self, AsyncCommands, RedisError, Value},
     PoolError,
 };
+use redis::streams::StreamRangeReply;
 use std::time::Duration;
 use tracing::{event, Level};
 
@@ -23,6 +24,14 @@ impl From<PoolError> for Error {
     fn from(e: PoolError) -> Self {
         Self::Pool(e)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct CurrentCount {
+    pub bucket: String,
+    pub count: u32,
+    pub max: u32,
+    pub window_start: u64,
 }
 
 #[derive(Clone)]
@@ -85,44 +94,66 @@ impl BucketStore {
         pipe.atomic();
 
         for charge in charges {
-            event!(
-                Level::DEBUG,
-                bucket = &charge.bucket.as_str(),
-                cost = &charge.cost,
-                "Charging bucket"
+            event!(Level::TRACE, ?charge.bucket, ?charge.cost, "requesting charge");
+            pipe.xadd(
+                &charge.bucket,
+                at,
+                &[("src", "peiji"), ("cost", &charge.cost.to_string())],
             );
-            charge_one(&mut pipe, &charge.bucket, charge.cost, at);
         }
 
-        event!(Level::TRACE, "Executing atomic pipeline");
         let mut conn = self.pool.get().await?;
 
+        event!(Level::TRACE, "Executing atomic pipeline");
         let _: () = pipe.query_async(&mut conn).await?;
+
         Ok(())
     }
 
     #[tracing::instrument(skip_all)]
     pub async fn counts<'l>(
         &self,
-        limits: impl Iterator<Item = &'l LimitView<'l>>,
-    ) -> Result<Vec<u32>, Error> {
+        limits: impl Iterator<Item = &'l LimitView<'l>> + Clone,
+    ) -> Result<Vec<CurrentCount>, Error> {
         event!(Level::TRACE, "Creating pipeline");
         let mut pipe = redis::pipe();
 
-        for limit in limits {
-            get_count(
-                &mut pipe,
-                limit.bucket,
-                period_timestamp(limit.freq.period()),
-            );
+        for limit in limits.clone() {
+            let pts = period_timestamp(limit.freq.period());
+
+            pipe.xrange(&limit.bucket, pts, "+");
         }
 
         event!(Level::TRACE, "Executing pipeline");
 
         let mut conn = self.pool.get().await?;
-        let result = pipe.query_async(&mut conn).await?;
+        let results: Vec<StreamRangeReply> = pipe.query_async(&mut conn).await?;
+        let current_costs = results
+            .iter()
+            .zip(limits)
+            .map(|(sr, lim)| {
+                let current_count = sr
+                    .ids
+                    .iter()
+                    .map(|ent| match ent.get("cost") {
+                        Some(Value::Data(d)) => String::from_utf8(d)
+                            .ok()
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .unwrap_or(0),
+                        _ => 0,
+                    })
+                    .sum();
 
-        Ok(result)
+                CurrentCount {
+                    bucket: lim.bucket.to_string(),
+                    count: current_count,
+                    max: lim.freq.raw(),
+                    window_start: period_timestamp(lim.freq.period()),
+                }
+            })
+            .collect();
+
+        Ok(current_costs)
     }
 
     #[tracing::instrument(skip_all)]
@@ -139,9 +170,11 @@ impl BucketStore {
                 end = ts,
                 "Cleaning entries"
             );
-            pipe.cmd("ZREMRANGEBYSCORE")
-                .arg(&config.bucket)
-                .arg("-inf")
+
+            pipe.cmd("XTRIM")
+                .arg(config.bucket)
+                .arg("MINID")
+                .arg("~")
                 .arg(ts);
         }
 
@@ -151,32 +184,6 @@ impl BucketStore {
 
         Ok(())
     }
-}
-
-fn charge_one<'p>(
-    mut pipe: &'p mut Pipeline,
-    bucket: &str,
-    cost: u32,
-    ts: u64,
-) -> &'p mut Pipeline {
-    for q in 0..=cost {
-        pipe = pipe.zadd(bucket, uniqueid(q), ts)
-    }
-    pipe
-}
-
-fn get_count<'p>(pipe: &'p mut Pipeline, bucket: &str, period: u64) -> &'p mut Pipeline {
-    pipe.zcount(bucket, period, "+inf")
-}
-
-fn uniqueid(iter: u32) -> String {
-    use std::time::SystemTime;
-
-    let id = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{}-{}", id, iter)
 }
 
 fn period_timestamp(period: Duration) -> u64 {

@@ -5,7 +5,7 @@ pub use engine::Engine;
 
 use std::time::Duration;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct Charge {
     pub bucket: String,
     pub cost: u32,
