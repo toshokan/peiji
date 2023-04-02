@@ -1,42 +1,53 @@
 use crate::policy::{Charge, LimitView};
 
-use redis::{aio::ConnectionManager as RedisConn, AsyncCommands, Client, Pipeline, RedisError};
+use deadpool_redis::redis::{self, AsyncCommands, Pipeline, RedisError};
 use std::time::Duration;
 use tracing::{event, Level};
 
 pub mod alloc;
 
+#[derive(Debug)]
+pub struct Error;
+impl From<RedisError> for Error {
+    fn from(_: RedisError) -> Self {
+        Error {}
+    }
+}
+impl From<deadpool_redis::PoolError> for Error {
+    fn from(_: deadpool_redis::PoolError) -> Self {
+        Error {}
+    }
+}
+
+#[derive(Clone)]
 pub struct BucketStore {
-    client: Client,
+    pool: deadpool_redis::Pool,
 }
 
 impl BucketStore {
     pub fn new(url: &str) -> Result<Self, RedisError> {
+        let cfg = deadpool_redis::Config::from_url(url);
         event!(Level::TRACE, "Initializing BucketStore");
-        let client = Client::open(url)?;
-        Ok(Self { client })
-    }
 
-    pub async fn ctx(&self) -> Result<StateCtx, RedisError> {
-        event!(Level::TRACE, "Issuing new state context");
-        Ok(StateCtx {
-            conn: self.client.get_tokio_connection_manager().await?,
-        })
+        let pool = cfg
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("failed to create redis pool");
+
+        Ok(Self { pool })
     }
 }
 
-pub struct StateCtx {
-    conn: RedisConn,
-}
-
-impl StateCtx {
+impl BucketStore {
     #[tracing::instrument(skip_all, fields(key))]
-    pub async fn is_blocked(&mut self, bucket: &str) -> Result<bool, RedisError> {
+    pub async fn is_blocked(&self, bucket: &str) -> Result<bool, Error> {
         let key = format!("blocked::{}", bucket);
         tracing::Span::current().record("key", &key.as_str());
 
         event!(Level::DEBUG, "Checking whether bucket is blocked");
-        let result: Option<bool> = self.conn.get(&key).await?;
+
+        let mut conn = self.pool.get().await?;
+
+        let result: Option<bool> = conn.get(&key).await?;
         if result.is_some() {
             event!(Level::WARN, blocked = true);
         }
@@ -45,22 +56,24 @@ impl StateCtx {
     }
 
     #[tracing::instrument(skip_all, fields(secs = secs, key))]
-    pub async fn block(&mut self, bucket: &str, secs: usize) -> Result<(), RedisError> {
+    pub async fn block(&self, bucket: &str, secs: usize) -> Result<(), Error> {
         let key = format!("blocked::{}", bucket);
         tracing::Span::current().record("key", &key.as_str());
 
         event!(Level::WARN, "Blocking bucket");
-        self.conn.set_ex(key, true, secs).await?;
+        let mut conn = self.pool.get().await?;
+
+        conn.set_ex(key, true, secs).await?;
 
         Ok(())
     }
 
     #[tracing::instrument(skip_all)]
     pub async fn charge(
-        &mut self,
+        &self,
         charges: impl Iterator<Item = &Charge>,
         at: u64,
-    ) -> Result<(), RedisError> {
+    ) -> Result<(), Error> {
         event!(Level::TRACE, "Creating atomic pipeline");
         let mut pipe = redis::pipe();
         pipe.atomic();
@@ -76,15 +89,17 @@ impl StateCtx {
         }
 
         event!(Level::TRACE, "Executing atomic pipeline");
-        let _: () = pipe.query_async(&mut self.conn).await?;
+        let mut conn = self.pool.get().await?;
+
+        let _: () = pipe.query_async(&mut conn).await?;
         Ok(())
     }
 
     #[tracing::instrument(skip_all)]
     pub async fn counts<'l>(
-        &mut self,
+        &self,
         limits: impl Iterator<Item = &'l LimitView<'l>>,
-    ) -> Result<Vec<u32>, RedisError> {
+    ) -> Result<Vec<u32>, Error> {
         event!(Level::TRACE, "Creating pipeline");
         let mut pipe = redis::pipe();
 
@@ -97,11 +112,15 @@ impl StateCtx {
         }
 
         event!(Level::TRACE, "Executing pipeline");
-        pipe.query_async(&mut self.conn).await
+
+        let mut conn = self.pool.get().await?;
+        let result = pipe.query_async(&mut conn).await?;
+
+        Ok(result)
     }
 
     #[tracing::instrument(skip_all)]
-    pub async fn clean_up(&mut self, configs: &[LimitView<'_>]) -> Result<(), RedisError> {
+    pub async fn clean_up(&self, configs: &[LimitView<'_>]) -> Result<(), Error> {
         event!(Level::TRACE, "Creating pipeline");
         let mut pipe = redis::pipe();
 
@@ -121,7 +140,8 @@ impl StateCtx {
         }
 
         event!(Level::TRACE, "Executing pipeline");
-        pipe.query_async(&mut self.conn).await?;
+        let mut conn = self.pool.get().await?;
+        pipe.query_async(&mut conn).await?;
 
         Ok(())
     }

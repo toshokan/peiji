@@ -9,13 +9,8 @@ pub async fn clean_up_worker(services: Services) {
 
     event!(Level::DEBUG, "Starting cleanup worker");
     let mut ticker = interval(Duration::from_secs(1));
-    let mut ctx = services
-        .engine
-        .request_ctx()
-        .await
-        .expect("Failed to get cleanup context");
 
-    let all = ctx.allocations.all();
+    let all = services.engine.allocations.all();
 
     let mut shutdown_receiver = services.coordinator.shutdown_receiver();
 
@@ -23,7 +18,7 @@ pub async fn clean_up_worker(services: Services) {
         tokio::select! {
             _ = ticker.tick() => {
                 event!(Level::TRACE, "Running cleanup tasks");
-                ctx.state.clean_up(&all).await.expect("Failed to clean up")
+                services.engine.buckets.clean_up(&all).await.expect("Failed to clean up")
             },
             _ = shutdown_receiver.recv() => {
                 break;

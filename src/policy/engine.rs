@@ -1,18 +1,13 @@
 use std::sync::Arc;
 use tracing::{event, Level};
 
-use crate::{policy::Response, state::StateCtx, AllocStore, BucketStore, Charge, Error};
+use crate::{policy::Response, AllocStore, BucketStore, Charge, Error};
 
 use super::LimitView;
 
-pub struct RequestCtx {
-    pub(crate) allocations: Arc<AllocStore>,
-    pub(crate) state: StateCtx,
-}
-
 pub struct Engine {
-    allocations: Arc<AllocStore>,
-    buckets: BucketStore,
+    pub(crate) allocations: Arc<AllocStore>,
+    pub(crate) buckets: BucketStore,
 }
 
 impl Engine {
@@ -24,20 +19,7 @@ impl Engine {
     }
 
     #[tracing::instrument(skip_all)]
-    pub async fn request_ctx(&self) -> Result<RequestCtx, Error> {
-        event!(Level::TRACE, "Issuing new request context");
-        Ok(RequestCtx {
-            state: self.buckets.ctx().await?,
-            allocations: Arc::clone(&self.allocations),
-        })
-    }
-
-    #[tracing::instrument(skip_all)]
-    pub async fn charge(
-        &self,
-        ctx: &mut RequestCtx,
-        mut charges: Vec<Charge>,
-    ) -> Result<Response, Error> {
+    pub async fn charge(&self, mut charges: Vec<Charge>) -> Result<Response, Error> {
         let mut result = Response::Ok;
         let timestamp = current_timestamp();
 
@@ -49,7 +31,7 @@ impl Engine {
         let data: Vec<(Charge, LimitView<'_>)> = charges
             .drain(..)
             .flat_map(|c| {
-                if let Some(limit) = ctx.allocations.bucket_config(&c.bucket) {
+                if let Some(limit) = self.allocations.bucket_config(&c.bucket) {
                     Some((c, limit))
                 } else {
                     event!(
@@ -63,13 +45,13 @@ impl Engine {
             .collect();
 
         for (charge, _) in &data {
-            if ctx.state.is_blocked(&charge.bucket).await? {
+            if self.buckets.is_blocked(&charge.bucket).await? {
                 event!(
                     Level::WARN,
                     bucket = &charge.bucket.as_str(),
                     "Refusing to charge already blocked bucket, resetting the block period."
                 );
-                ctx.state.block(&charge.bucket, 60).await?;
+                self.buckets.block(&charge.bucket, 60).await?;
                 return Ok(Response::Block);
             }
 
@@ -85,12 +67,12 @@ impl Engine {
         }
 
         event!(Level::DEBUG, "Issuing charges");
-        ctx.state
+        self.buckets
             .charge(data.iter().map(|(c, _)| c), timestamp)
             .await?;
 
         event!(Level::DEBUG, "Getting charged bucket totals");
-        let counts = ctx.state.counts(data.iter().map(|(_, l)| l)).await?;
+        let counts = self.buckets.counts(data.iter().map(|(_, l)| l)).await?;
 
         for ((_, limit), current) in data.iter().zip(counts) {
             if current > limit.freq.raw() {
@@ -101,7 +83,7 @@ impl Engine {
                     current = current,
                     "Blocking bucket"
                 );
-                ctx.state.block(&limit.bucket, 5).await?;
+                self.buckets.block(&limit.bucket, 5).await?;
                 result = Response::Stop;
             } else if current as f64 / limit.freq.raw() as f64 > 0.9 {
                 event!(

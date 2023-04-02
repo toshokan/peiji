@@ -12,14 +12,14 @@ use tokio::sync::broadcast;
 
 #[derive(Debug)]
 pub enum Error {
-    State(redis::RedisError),
+    State(state::Error),
     Io(std::io::Error),
     Toml(toml::de::Error),
     Validation,
 }
 
-impl From<redis::RedisError> for Error {
-    fn from(e: redis::RedisError) -> Self {
+impl From<state::Error> for Error {
+    fn from(e: state::Error) -> Self {
         Self::State(e)
     }
 }

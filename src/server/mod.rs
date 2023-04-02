@@ -14,15 +14,15 @@ async fn charges(
     State(services): State<Services>,
     Json(charges): Json<Vec<Charge>>,
 ) -> impl IntoResponse {
-    let mut ctx = match services.engine.request_ctx().await {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            event!(Level::ERROR, error = ?e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Err("server error"));
-        }
-    };
+    // let mut ctx = match services.engine.request_ctx().await {
+    //     Ok(ctx) => ctx,
+    //     Err(e) => {
+    //         event!(Level::ERROR, error = ?e);
+    //         return (StatusCode::INTERNAL_SERVER_ERROR, Err("server error"));
+    //     }
+    // };
 
-    match services.engine.charge(&mut ctx, charges).await {
+    match services.engine.charge(charges).await {
         Ok(result) => return (StatusCode::OK, Ok(Json(result))),
         Err(e) => {
             event!(Level::ERROR, error = ?e);
