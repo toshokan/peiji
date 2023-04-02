@@ -2,6 +2,7 @@ mod policy;
 mod server;
 mod state;
 
+use std::net::SocketAddr;
 pub use policy::{Charge, ConfigFile, Engine, Frequency, Limit};
 pub use state::alloc::AllocStore;
 pub use state::BucketStore;
@@ -32,6 +33,6 @@ impl From<toml::de::Error> for Error {
     }
 }
 
-pub async fn peiji(engine: Engine) {
-    server::server(engine).await
+pub async fn peiji(server_binding: SocketAddr, engine: Engine) {
+    server::server(server_binding, engine).await
 }

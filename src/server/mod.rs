@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use tracing::{event, Level};
 
 use crate::{policy::Charge, Engine};
 
 use warp::{http::StatusCode, reply::json, Filter, Reply};
 
-pub async fn server(engine: Engine) {
+pub async fn server(binding: SocketAddr, engine: Engine) {
     let engine = Arc::new(engine);
 
     let cleanup_engine = engine.clone();
@@ -46,5 +46,5 @@ pub async fn server(engine: Engine) {
         .and(charge)
         .with(warp::log("server"));
 
-    warp::serve(api).run(([0, 0, 0, 0], 80)).await
+    warp::serve(api).run(binding).await
 }

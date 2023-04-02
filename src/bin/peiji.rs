@@ -1,10 +1,15 @@
+use std::net::{IpAddr, SocketAddr};
+use std::str::FromStr;
+
 use peiji::ConfigFile;
 
 
 #[derive(Debug)]
 struct Config {
     redis_uri: String,
-    config_file: String
+    config_file: String,
+    listen_ip: String,
+    listen_port: u16
 }
 
 impl Config {
@@ -13,7 +18,13 @@ impl Config {
 	    redis_uri: std::env::var("REDIS_URI")
 		.expect("Supply REDIS_URI"),
 	    config_file: std::env::var("CONFIG_FILE_PATH")
-		.expect("Supply CONFIG_FILE_PATH")
+		.expect("Supply CONFIG_FILE_PATH"),
+            listen_ip: std::env::var("LISTEN_IP")
+                .expect("Supply LISTEN_IP"),
+            listen_port: std::env::var("LISTEN_PORT")
+                .expect("Supply LISTEN_PORT")
+                .parse()
+                .expect("invalid LISTEN_PORT")
 	}
     }
 }
@@ -32,5 +43,10 @@ async fn main() {
     
     let engine = peiji::Engine::new(alloc, state);
 
-    peiji::peiji(engine).await
+    let ip = IpAddr::from_str(&config.listen_ip)
+        .expect("invalid listen ip");
+
+    let binding = SocketAddr::new(ip, config.listen_port);
+
+    peiji::peiji(binding, engine).await
 }
