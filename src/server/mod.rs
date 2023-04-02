@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 use tracing::{event, Level};
 
-use crate::{policy::Charge, Engine};
+use crate::{policy::Charge, Engine, Services};
 
 use axum::{
     extract::{Json, State},
@@ -12,10 +12,10 @@ use axum::{
 };
 
 async fn charges(
-    State(engine): State<Arc<Engine>>,
+    State(services): State<Services>,
     Json(charges): Json<Vec<Charge>>,
 ) -> impl IntoResponse {
-    let mut ctx = match engine.request_ctx().await {
+    let mut ctx = match services.engine.request_ctx().await {
         Ok(ctx) => ctx,
         Err(e) => {
             event!(Level::ERROR, error = ?e);
@@ -23,7 +23,7 @@ async fn charges(
         }
     };
 
-    match engine.charge(&mut ctx, charges).await {
+    match services.engine.charge(&mut ctx, charges).await {
         Ok(result) => return (StatusCode::OK, Ok(Json(result))),
         Err(e) => {
             event!(Level::ERROR, error = ?e);
@@ -33,20 +33,19 @@ async fn charges(
     return (StatusCode::BAD_REQUEST, Err("bad request"));
 }
 
-pub async fn server(binding: SocketAddr, engine: Engine) {
-    let engine = Arc::new(engine);
-
-    let cleanup_engine = engine.clone();
+pub async fn server(services: Services) {
+    let cleanup_engine = Arc::clone(&services.engine);
     let _cleanup = tokio::spawn(async move { cleanup_engine.clean_up_worker().await });
 
     let api = Router::new()
         .route("/charges", post(charges))
-        .with_state(Arc::clone(&engine));
+        .with_state(services.clone());
 
     let app = Router::new()
         .nest("/api/v1", api)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
+    let binding = services.config.binding;
     axum::Server::bind(&binding)
         .serve(app.into_make_service())
         .await

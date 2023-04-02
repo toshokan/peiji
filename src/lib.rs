@@ -6,6 +6,7 @@ pub use policy::{Charge, ConfigFile, Engine, Frequency, Limit};
 pub use state::alloc::AllocStore;
 pub use state::BucketStore;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum Error {
@@ -38,17 +39,21 @@ pub struct Config {
     pub binding: SocketAddr,
 }
 
+#[derive(Clone)]
 pub struct Services {
     config: Config,
-    engine: Engine,
+    engine: Arc<Engine>,
 }
 
 impl Services {
     pub fn new(config: Config, engine: Engine) -> Self {
-        Self { config, engine }
+        Self {
+            config,
+            engine: Arc::new(engine),
+        }
     }
 }
 
 pub async fn peiji(services: Services) {
-    server::server(services.config.binding, services.engine).await
+    server::server(services).await
 }
