@@ -1,7 +1,6 @@
-use std::{net::SocketAddr, sync::Arc};
 use tracing::{event, Level};
 
-use crate::{policy::Charge, Engine, Services};
+use crate::{policy::Charge, Services};
 
 use axum::{
     extract::{Json, State},
@@ -34,9 +33,6 @@ async fn charges(
 }
 
 pub async fn server(services: Services) {
-    let cleanup_engine = Arc::clone(&services.engine);
-    let _cleanup = tokio::spawn(async move { cleanup_engine.clean_up_worker().await });
-
     let api = Router::new()
         .route("/charges", post(charges))
         .with_state(services.clone());
@@ -45,9 +41,14 @@ pub async fn server(services: Services) {
         .nest("/api/v1", api)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
+    let mut shutdown_receiver = services.coordinator.shutdown_receiver();
+
     let binding = services.config.binding;
     axum::Server::bind(&binding)
         .serve(app.into_make_service())
+        .with_graceful_shutdown(async {
+            shutdown_receiver.recv().await;
+        })
         .await
         .expect("failed to serve");
 }

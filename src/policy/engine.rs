@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tracing::{event, Level};
 
 use crate::{policy::Response, state::StateCtx, AllocStore, BucketStore, Charge, Error};
@@ -6,8 +6,8 @@ use crate::{policy::Response, state::StateCtx, AllocStore, BucketStore, Charge, 
 use super::LimitView;
 
 pub struct RequestCtx {
-    allocations: Arc<AllocStore>,
-    state: StateCtx,
+    pub(crate) allocations: Arc<AllocStore>,
+    pub(crate) state: StateCtx,
 }
 
 pub struct Engine {
@@ -116,26 +116,6 @@ impl Engine {
         }
 
         Ok(result)
-    }
-
-    #[tracing::instrument(skip_all)]
-    pub async fn clean_up_worker(&self) {
-        use tokio::time::interval;
-
-        event!(Level::DEBUG, "Starting cleanup worker");
-        let mut ticker = interval(Duration::from_secs(1));
-        let mut ctx = self
-            .request_ctx()
-            .await
-            .expect("Failed to get cleanup context");
-
-        let all = ctx.allocations.all();
-
-        loop {
-            ticker.tick().await;
-            event!(Level::TRACE, "Running cleanup tasks");
-            ctx.state.clean_up(&all).await.expect("Failed to clean up")
-        }
     }
 }
 
