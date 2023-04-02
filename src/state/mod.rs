@@ -1,21 +1,27 @@
 use crate::policy::{Charge, LimitView};
 
-use deadpool_redis::redis::{self, AsyncCommands, Pipeline, RedisError};
+use deadpool_redis::{
+    redis::{self, AsyncCommands, Pipeline, RedisError},
+    PoolError,
+};
 use std::time::Duration;
 use tracing::{event, Level};
 
 pub mod alloc;
 
 #[derive(Debug)]
-pub struct Error;
+pub enum Error {
+    Redis(RedisError),
+    Pool(PoolError),
+}
 impl From<RedisError> for Error {
-    fn from(_: RedisError) -> Self {
-        Error {}
+    fn from(error: RedisError) -> Self {
+        Self::Redis(error)
     }
 }
-impl From<deadpool_redis::PoolError> for Error {
-    fn from(_: deadpool_redis::PoolError) -> Self {
-        Error {}
+impl From<PoolError> for Error {
+    fn from(e: PoolError) -> Self {
+        Self::Pool(e)
     }
 }
 
@@ -25,7 +31,7 @@ pub struct BucketStore {
 }
 
 impl BucketStore {
-    pub fn new(url: &str) -> Result<Self, RedisError> {
+    pub fn new(url: &str) -> Result<Self, Error> {
         let cfg = deadpool_redis::Config::from_url(url);
         event!(Level::TRACE, "Initializing BucketStore");
 
