@@ -37,7 +37,8 @@ pub async fn server(binding: SocketAddr, engine: Engine) {
         .with_state(Arc::clone(&engine));
 
     let app = Router::new()
-        .nest("/api/v1", api);
+        .nest("/api/v1", api)
+        .layer(tower_http::trace::TraceLayer::new_for_http());
 
     axum::Server::bind(&binding)
         .serve(app.into_make_service())
