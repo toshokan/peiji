@@ -31,19 +31,14 @@ local function charge_bucket(keys, args)
     end
   end
 
-  if total < tonumber(args[2])
+  local new_total = total + args[4]
+  if new_total <= tonumber(args[2])
   then
     redis.call('XADD', keys[1], args[3], "src", "peiji", "cost", args[4])
-    local new_total = total + args[4]
-    if new_total >= tonumber(args[2])
-    then
-      redis.call('SETEX', keys[2], args[5], 1)
-      return {true, true, new_total}
-    else
-      return {false, true, new_total}
-    end
+    return {false, true, new_total}
   else
-    return {false, false, total}
+    redis.call('SETEX', keys[2], args[5], 1)
+    return {true, false, total}
   end
 end
 
