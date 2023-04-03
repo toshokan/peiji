@@ -30,14 +30,12 @@ pub struct ChargeResult {
     pub bucket: String,
     pub is_blocked: bool,
     pub charge_success: bool,
-    pub count: Option<CurrentCount>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CurrentCount {
-    pub count: u32,
-    pub max: u32,
+    pub max_quota: u32,
+    pub as_of: u64,
     pub window_start: u64,
+    pub window_end: u64,
+    pub window_length_secs: u32,
+    pub current_count: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -87,7 +85,8 @@ impl BucketStore {
     ) -> Result<ChargeResult, Error> {
         let mut conn = self.pool.get().await?;
 
-        let pts = period_timestamp(limit.freq.period());
+        let period = limit.freq.period();
+        let pts = period_start_timestamp(at, period);
         let ts = timestamp(at);
 
         let (is_blocked, charge_success, total): (bool, bool, u32) = redis::cmd("FCALL")
@@ -104,20 +103,17 @@ impl BucketStore {
             .query_async(&mut conn)
             .await?;
 
-        let mut result = ChargeResult {
+        let result = ChargeResult {
             bucket: bucket.to_string(),
             is_blocked,
             charge_success,
-            count: None,
+            max_quota: limit.freq.raw(),
+            as_of: ts,
+            window_start: pts,
+            window_end: period_end_timestamp(at, period),
+            window_length_secs: period.as_secs() as u32,
+            current_count: if is_blocked { None } else { Some(total) },
         };
-
-        if !is_blocked {
-            result.count = Some(CurrentCount {
-                count: total,
-                max: limit.freq.raw(),
-                window_start: pts,
-            })
-        }
 
         Ok(result)
     }
@@ -127,8 +123,10 @@ impl BucketStore {
         event!(Level::TRACE, "Creating pipeline");
         let mut pipe = redis::pipe();
 
+        let now = SystemTime::now();
+
         for config in configs {
-            let ts = period_timestamp(config.freq.period());
+            let ts = period_start_timestamp(now, config.freq.period());
             event!(
                 Level::TRACE,
                 bucket = config.bucket,
@@ -160,14 +158,14 @@ fn timestamp(time: SystemTime) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn period_timestamp(period: Duration) -> u64 {
+fn period_end_timestamp(now: SystemTime, period: Duration) -> u64 {
+    use std::ops::Add;
+
+    timestamp(now.add(period))
+}
+
+fn period_start_timestamp(now: SystemTime, period: Duration) -> u64 {
     use std::ops::Sub;
 
-    let ts = SystemTime::now()
-        .sub(period)
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-
-    ts.try_into().unwrap_or(u64::MAX)
+    timestamp(now.sub(period))
 }
