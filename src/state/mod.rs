@@ -1,11 +1,10 @@
-use crate::policy::{Charge, LimitView};
+use crate::policy::LimitView;
 
 use deadpool_redis::{
-    redis::{self, AsyncCommands, RedisError, Value},
+    redis::{self, RedisError},
     PoolError,
 };
-use redis::streams::StreamRangeReply;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tracing::{event, Level};
 
 pub mod alloc;
@@ -26,9 +25,16 @@ impl From<PoolError> for Error {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct CurrentCount {
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChargeResult {
     pub bucket: String,
+    pub is_blocked: bool,
+    pub charge_success: bool,
+    pub count: Option<CurrentCount>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CurrentCount {
     pub count: u32,
     pub max: u32,
     pub window_start: u64,
@@ -40,7 +46,7 @@ pub struct BucketStore {
 }
 
 impl BucketStore {
-    pub fn new(url: &str) -> Result<Self, Error> {
+    pub async fn new(url: &str) -> Result<Self, Error> {
         let cfg = deadpool_redis::Config::from_url(url);
         event!(Level::TRACE, "Initializing BucketStore");
 
@@ -48,112 +54,74 @@ impl BucketStore {
             .create_pool(Some(deadpool_redis::Runtime::Tokio1))
             .expect("failed to create redis pool");
 
-        Ok(Self { pool })
-    }
-}
+        let sself = Self { pool };
+        sself.reload_redis_functions().await?;
 
-impl BucketStore {
-    #[tracing::instrument(skip_all, fields(key))]
-    pub async fn is_blocked(&self, bucket: &str) -> Result<bool, Error> {
-        let key = format!("blocked::{}", bucket);
-        tracing::Span::current().record("key", &key.as_str());
-
-        event!(Level::DEBUG, "Checking whether bucket is blocked");
-
-        let mut conn = self.pool.get().await?;
-
-        let result: Option<bool> = conn.get(&key).await?;
-        if result.is_some() {
-            event!(Level::WARN, blocked = true);
-        }
-
-        Ok(result.is_some())
-    }
-
-    #[tracing::instrument(skip_all, fields(secs = secs, key))]
-    pub async fn block(&self, bucket: &str, secs: usize) -> Result<(), Error> {
-        let key = format!("blocked::{}", bucket);
-        tracing::Span::current().record("key", &key.as_str());
-
-        event!(Level::WARN, "Blocking bucket");
-        let mut conn = self.pool.get().await?;
-
-        conn.set_ex(key, true, secs).await?;
-
-        Ok(())
+        Ok(sself)
     }
 
     #[tracing::instrument(skip_all)]
-    pub async fn charge(
-        &self,
-        charges: impl Iterator<Item = &Charge>,
-        at: u64,
-    ) -> Result<(), Error> {
-        event!(Level::TRACE, "Creating atomic pipeline");
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-
-        for charge in charges {
-            event!(Level::TRACE, ?charge.bucket, ?charge.cost, "requesting charge");
-            pipe.xadd(
-                &charge.bucket,
-                at,
-                &[("src", "peiji"), ("cost", &charge.cost.to_string())],
-            );
-        }
+    async fn reload_redis_functions(&self) -> Result<(), Error> {
+        let module = include_str!("../../lua/peiji.lua");
 
         let mut conn = self.pool.get().await?;
 
-        event!(Level::TRACE, "Executing atomic pipeline");
-        let _: () = pipe.query_async(&mut conn).await?;
+        event!(Level::DEBUG, "loading peiji lua module");
+        let result = redis::cmd("FUNCTION")
+            .arg("LOAD")
+            .arg("lua")
+            .arg("peiji")
+            .arg("REPLACE")
+            .arg(module)
+            .query_async(&mut conn)
+            .await?;
+        event!(Level::DEBUG, "loaded peiji lua module");
 
-        Ok(())
+        Ok(result)
     }
 
-    #[tracing::instrument(skip_all)]
-    pub async fn counts<'l>(
+    pub async fn charge<'l>(
         &self,
-        limits: impl Iterator<Item = &'l LimitView<'l>> + Clone,
-    ) -> Result<Vec<CurrentCount>, Error> {
-        event!(Level::TRACE, "Creating pipeline");
-        let mut pipe = redis::pipe();
-
-        for limit in limits.clone() {
-            let pts = period_timestamp(limit.freq.period());
-
-            pipe.xrange(&limit.bucket, pts, "+");
-        }
-
-        event!(Level::TRACE, "Executing pipeline");
-
+        bucket: &str,
+        amount: u32,
+        limit: LimitView<'l>,
+        at: SystemTime,
+    ) -> Result<ChargeResult, Error> {
         let mut conn = self.pool.get().await?;
-        let results: Vec<StreamRangeReply> = pipe.query_async(&mut conn).await?;
-        let current_costs = results
-            .iter()
-            .zip(limits)
-            .map(|(sr, lim)| {
-                let current_count = sr
-                    .ids
-                    .iter()
-                    .map(|ent| match ent.get("cost") {
-                        Some(Value::Data(d)) => String::from_utf8(d)
-                            .ok()
-                            .and_then(|s| s.parse::<u32>().ok())
-                            .unwrap_or(0),
-                        _ => 0,
-                    })
-                    .sum();
 
-                CurrentCount {
-                    bucket: lim.bucket.to_string(),
-                    count: current_count,
-                    max: lim.freq.raw(),
-                    window_start: period_timestamp(lim.freq.period()),
-                }
+        let pts = period_timestamp(limit.freq.period());
+        let ts = timestamp(at);
+
+        let (is_blocked, charge_success, total): (bool, bool, u32) = redis::cmd("FCALL")
+            .arg("charge_bucket")
+            .arg(2)
+            .arg(bucket) // keys[1]
+            .arg(&format!("blocked::{}", bucket)) // keys[2]
+            .arg(pts) // args[1]
+            .arg(limit.freq.raw()) // args[2]
+            .arg(ts) // args[3]
+            .arg(amount) // args[4]
+            .arg(5) // args[5]
+            .arg(60) // args[6]
+            .query_async(&mut conn)
+            .await?;
+
+        let mut result = ChargeResult {
+            bucket: bucket.to_string(),
+            is_blocked,
+            charge_success,
+            count: None,
+        };
+
+        if !is_blocked {
+            result.count = Some(CurrentCount {
+                count: total,
+                max: limit.freq.raw(),
+                window_start: pts,
             })
-            .collect();
+        }
 
-        Ok(current_costs)
+        Ok(result)
     }
 
     #[tracing::instrument(skip_all)]
@@ -186,9 +154,16 @@ impl BucketStore {
     }
 }
 
+fn timestamp(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 fn period_timestamp(period: Duration) -> u64 {
     use std::ops::Sub;
-    use std::time::SystemTime;
 
     let ts = SystemTime::now()
         .sub(period)

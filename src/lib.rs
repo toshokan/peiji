@@ -16,6 +16,13 @@ pub enum Error {
     Io(std::io::Error),
     Toml(toml::de::Error),
     Validation,
+    App(AppError),
+}
+
+#[derive(Debug)]
+pub enum AppError {
+    UnknownBucket,
+    UnreasonableCost,
 }
 
 impl From<state::Error> for Error {
@@ -33,6 +40,12 @@ impl From<std::io::Error> for Error {
 impl From<toml::de::Error> for Error {
     fn from(e: toml::de::Error) -> Self {
         Self::Toml(e)
+    }
+}
+
+impl From<AppError> for Error {
+    fn from(e: AppError) -> Self {
+        Self::App(e)
     }
 }
 

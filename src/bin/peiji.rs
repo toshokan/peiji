@@ -35,7 +35,9 @@ async fn main() {
     let config_file = ConfigFile::from_file(&config.config_file).expect("Bad config file");
 
     let alloc = peiji::AllocStore::new(config_file.limits);
-    let state = peiji::BucketStore::new(&config.redis_uri).expect("Failed to initialize store");
+    let state = peiji::BucketStore::new(&config.redis_uri)
+        .await
+        .expect("Failed to initialize store");
 
     let engine = peiji::Engine::new(alloc, state);
 

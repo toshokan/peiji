@@ -1,40 +1,12 @@
-use tracing::{event, Level};
+use crate::Services;
 
-use crate::{policy::Charge, Services};
+use axum::Router;
 
-use axum::{
-    extract::{Json, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Router,
-};
-
-async fn charges(
-    State(services): State<Services>,
-    Json(charges): Json<Vec<Charge>>,
-) -> impl IntoResponse {
-    // let mut ctx = match services.engine.request_ctx().await {
-    //     Ok(ctx) => ctx,
-    //     Err(e) => {
-    //         event!(Level::ERROR, error = ?e);
-    //         return (StatusCode::INTERNAL_SERVER_ERROR, Err("server error"));
-    //     }
-    // };
-
-    match services.engine.charge(charges).await {
-        Ok(result) => return (StatusCode::OK, Ok(Json(result))),
-        Err(e) => {
-            event!(Level::ERROR, error = ?e);
-        }
-    }
-
-    return (StatusCode::BAD_REQUEST, Err("bad request"));
-}
+mod buckets;
 
 pub async fn server(services: Services) {
     let api = Router::new()
-        .route("/charges", post(charges))
+        .nest("/buckets", buckets::router(services.clone()))
         .with_state(services.clone());
 
     let app = Router::new()

@@ -1,9 +1,7 @@
 use std::sync::Arc;
 use tracing::{event, Level};
 
-use crate::{policy::Response, AllocStore, BucketStore, Charge, Error};
-
-use super::LimitView;
+use crate::{state::ChargeResult, AllocStore, AppError, BucketStore, Error};
 
 pub struct Engine {
     pub(crate) allocations: Arc<AllocStore>,
@@ -18,92 +16,21 @@ impl Engine {
         }
     }
 
-    #[tracing::instrument(skip_all)]
-    pub async fn charge(&self, mut charges: Vec<Charge>) -> Result<Response, Error> {
-        let mut result = Response::Ok;
-        let timestamp = current_timestamp();
+    pub async fn charge(&self, bucket: &str, amount: u32) -> Result<ChargeResult, Error> {
+        let limit = self
+            .allocations
+            .bucket_config(bucket)
+            .ok_or(AppError::UnknownBucket)?;
 
-        if charges.len() > 100 {
-            event!(Level::ERROR, count = charges.len(), "Too many charges");
-            Err(Error::Validation)?
+        if amount > 1000 {
+            Err(AppError::UnreasonableCost)?;
         }
 
-        let data: Vec<(Charge, LimitView<'_>)> = charges
-            .drain(..)
-            .flat_map(|c| {
-                if let Some(limit) = self.allocations.bucket_config(&c.bucket) {
-                    Some((c, limit))
-                } else {
-                    event!(
-                        Level::WARN,
-                        bucket = c.bucket.as_str(),
-                        "Asked to charge unconfigured bucket"
-                    );
-                    None
-                }
-            })
-            .collect();
-
-        for (charge, _) in &data {
-            if self.buckets.is_blocked(&charge.bucket).await? {
-                event!(
-                    Level::WARN,
-                    bucket = &charge.bucket.as_str(),
-                    "Refusing to charge already blocked bucket, resetting the block period."
-                );
-                self.buckets.block(&charge.bucket, 60).await?;
-                return Ok(Response::Block);
-            }
-
-            if charge.cost > 1000 {
-                event!(
-                    Level::ERROR,
-                    bucket = &charge.bucket.as_str(),
-                    cost = charge.cost,
-                    "Unreasonable cost"
-                );
-                Err(Error::Validation)?
-            }
-        }
-
-        event!(Level::DEBUG, "Issuing charges");
-        self.buckets
-            .charge(data.iter().map(|(c, _)| c), timestamp)
+        let result = self
+            .buckets
+            .charge(bucket, amount, limit, std::time::SystemTime::now())
             .await?;
-
-        event!(Level::DEBUG, "Getting charged bucket totals");
-        let counts = self.buckets.counts(data.iter().map(|(_, l)| l)).await?;
-
-        for ((_, limit), current) in data.iter().zip(counts) {
-            if current.count > current.max {
-                event!(
-                    Level::WARN,
-                    current_count = ?current,
-                    "Blocking bucket"
-                );
-                self.buckets.block(&limit.bucket, 5).await?;
-                result = Response::Stop;
-            } else if current.count as f64 / current.max as f64 > 0.9 {
-                event!(
-                    Level::WARN,
-                    current_count = ?current,
-                    "Slow down"
-                );
-                result = Response::SlowDown;
-            }
-        }
 
         Ok(result)
     }
-}
-
-fn current_timestamp() -> u64 {
-    use std::time::SystemTime;
-
-    let ts = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-
-    ts.try_into().unwrap_or(u64::MAX)
 }
