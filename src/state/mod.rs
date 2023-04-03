@@ -1,4 +1,4 @@
-use crate::policy::LimitView;
+use crate::policy::{BlockPolicy, LimitView};
 
 use deadpool_redis::{
     redis::{self, RedisError},
@@ -28,7 +28,7 @@ impl From<PoolError> for Error {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChargeResult {
     pub bucket: String,
-    pub is_blocked: bool,
+    pub blocked_secs: Option<u32>,
     pub charge_success: bool,
     pub max_quota: u32,
     pub as_of: u64,
@@ -81,6 +81,7 @@ impl BucketStore {
         bucket: &str,
         amount: u32,
         limit: LimitView<'l>,
+        block_policy: BlockPolicy,
         at: SystemTime,
     ) -> Result<ChargeResult, Error> {
         let mut conn = self.pool.get().await?;
@@ -89,23 +90,24 @@ impl BucketStore {
         let pts = period_start_timestamp(at, period);
         let ts = timestamp(at);
 
-        let (is_blocked, charge_success, total): (bool, bool, u32) = redis::cmd("FCALL")
-            .arg("charge_bucket")
-            .arg(2)
-            .arg(bucket) // keys[1]
-            .arg(&format!("blocked::{}", bucket)) // keys[2]
-            .arg(pts) // args[1]
-            .arg(limit.freq.raw()) // args[2]
-            .arg(ts) // args[3]
-            .arg(amount) // args[4]
-            .arg(5) // args[5]
-            .arg(60) // args[6]
-            .query_async(&mut conn)
-            .await?;
+        let (is_blocked, charge_success, total, block_secs): (bool, bool, u32, u32) =
+            redis::cmd("FCALL")
+                .arg("charge_bucket")
+                .arg(2)
+                .arg(bucket) // keys[1]
+                .arg(block_policy.block_key) // keys[2]
+                .arg(pts) // args[1]
+                .arg(limit.freq.raw()) // args[2]
+                .arg(ts) // args[3]
+                .arg(amount) // args[4]
+                .arg(block_policy.short_timeout) // args[5]
+                .arg(block_policy.long_timeout) // args[6]
+                .query_async(&mut conn)
+                .await?;
 
         let result = ChargeResult {
             bucket: bucket.to_string(),
-            is_blocked,
+            blocked_secs: if is_blocked { Some(block_secs) } else { None },
             charge_success,
             max_quota: limit.freq.raw(),
             as_of: ts,

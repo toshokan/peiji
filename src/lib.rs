@@ -3,7 +3,7 @@ mod server;
 mod state;
 mod worker;
 
-pub use policy::{Charge, ConfigFile, Engine, Frequency, Limit};
+pub use policy::{BlockService, Charge, ConfigFile, Engine, Frequency, Limit};
 pub use state::alloc::AllocStore;
 pub use state::BucketStore;
 use std::net::SocketAddr;
@@ -52,6 +52,8 @@ impl From<AppError> for Error {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub binding: SocketAddr,
+    pub short_block_timeout_secs: u32,
+    pub long_block_timeout_secs: u32,
 }
 
 #[derive(Debug, Clone)]

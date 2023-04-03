@@ -1,18 +1,21 @@
 use std::sync::Arc;
 use tracing::{event, Level};
 
+use crate::policy::block::BlockService;
 use crate::{state::ChargeResult, AllocStore, AppError, BucketStore, Error};
 
 pub struct Engine {
     pub(crate) allocations: Arc<AllocStore>,
     pub(crate) buckets: BucketStore,
+    pub(crate) block: BlockService,
 }
 
 impl Engine {
-    pub fn new(allocations: AllocStore, buckets: BucketStore) -> Self {
+    pub fn new(allocations: AllocStore, buckets: BucketStore, block: BlockService) -> Self {
         Self {
             allocations: Arc::new(allocations),
             buckets,
+            block,
         }
     }
 
@@ -26,9 +29,17 @@ impl Engine {
             Err(AppError::UnreasonableCost)?;
         }
 
+        let block_policy = self.block.policy_for(bucket);
+
         let result = self
             .buckets
-            .charge(bucket, amount, limit, std::time::SystemTime::now())
+            .charge(
+                bucket,
+                amount,
+                limit,
+                block_policy,
+                std::time::SystemTime::now(),
+            )
             .await?;
 
         Ok(result)

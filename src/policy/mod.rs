@@ -1,6 +1,8 @@
+mod block;
 mod engine;
 
 use crate::Error;
+pub use block::{BlockPolicy, BlockService};
 pub use engine::Engine;
 
 use std::time::Duration;

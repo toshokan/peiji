@@ -29,6 +29,8 @@ async fn charge(
         None => 0,
     };
 
+    let window_remaining_secs = result.blocked_secs.unwrap_or(result.window_length_secs);
+
     let headers = [
         ("RateLimit-Limit", result.max_quota.to_string()),
         ("RateLimit-Remaining", remaining.to_string()),
@@ -36,10 +38,10 @@ async fn charge(
             "RateLimit-Policy",
             format!("{};w={}", result.max_quota, result.window_length_secs),
         ),
-        ("RateLimit-Reset", result.window_length_secs.to_string()),
+        ("RateLimit-Reset", window_remaining_secs.to_string()),
     ];
 
-    let (code, status) = if result.is_blocked {
+    let (code, status) = if result.blocked_secs.is_some() {
         (StatusCode::TOO_MANY_REQUESTS, Response::Block)
     } else if result.current_count == Some(result.max_quota) {
         (StatusCode::OK, Response::Stop)
