@@ -69,8 +69,6 @@ impl BucketStore {
         event!(Level::DEBUG, "loading peiji lua module");
         let result = redis::cmd("FUNCTION")
             .arg("LOAD")
-            .arg("lua")
-            .arg("peiji")
             .arg("REPLACE")
             .arg(module)
             .query_async(&mut conn)

@@ -1,3 +1,5 @@
+#!lua name=peiji
+
 -- keys[1] = bucket name
 -- keys[2] = blocked bucket name
 --
