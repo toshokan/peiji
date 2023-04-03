@@ -2,6 +2,7 @@ use crate::{policy::Response, Services};
 
 use axum::{
     extract::{Json, Path, State},
+    http::StatusCode,
     response::IntoResponse,
     routing::post,
     Router,
@@ -38,17 +39,17 @@ async fn charge(
         ("RateLimit-Reset", result.window_length_secs.to_string()),
     ];
 
-    let status = if result.is_blocked {
-        Response::Block
+    let (code, status) = if result.is_blocked {
+        (StatusCode::TOO_MANY_REQUESTS, Response::Block)
     } else if result.current_count == Some(result.max_quota) {
-        Response::Stop
+        (StatusCode::OK, Response::Stop)
     } else if result.current_count.unwrap_or(0) as f64 > (0.9 * result.max_quota as f64) {
-        Response::SlowDown
+        (StatusCode::OK, Response::SlowDown)
     } else {
-        Response::Ok
+        (StatusCode::OK, Response::Ok)
     };
 
-    (headers, Json(status))
+    (code, headers, Json(status))
 }
 
 pub fn router(services: Services) -> Router<Services> {
